@@ -40,6 +40,8 @@ jobs:
           # Through the environment: the makefile adds its own flags to these.
           export CPPFLAGS="-I$USR/include -DARG_MAX=131072 -DVERSION=\\\"$version\\\""
           export LDFLAGS="-L$USR/lib"
+          # master misses <string.h> in ashmem_memfd.c; newer NDK clang makes that an error.
+          export CFLAGS="-Wno-error=implicit-function-declaration"
           make -C src -j"$(nproc)" proot \
             CC=$bin/aarch64-linux-android24-clang \
             STRIP=$bin/llvm-strip OBJCOPY=$bin/llvm-objcopy OBJDUMP=$bin/llvm-objdump \
