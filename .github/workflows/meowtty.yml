@@ -1,0 +1,63 @@
+# Builds proot for the MeowTTY Android app the way the Termux package does
+# (NDK, bionic, libandroid-shmem, unbundled loader), and publishes the
+# binaries as a release of this fork. The source of each binary is the
+# commit the release names. proot is GPL-2.0.
+name: MeowTTY build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [meowtty]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Termux libtalloc and libandroid-shmem (headers and libraries)
+        run: |
+          sudo apt-get install -y --no-install-recommends libarchive-tools
+          repo=https://packages-cf.termux.dev/apt/termux-main
+          curl -fsS $repo/dists/stable/main/binary-aarch64/Packages.gz | gunzip > Packages
+          mkdir -p termux
+          for p in libtalloc libandroid-shmem; do
+            f=$(awk -v p="$p" '$0 == "Package: " p {x=1} x && /^Filename:/ {print $2; exit}' Packages)
+            curl -fsS "$repo/$f" -o $p.deb
+            bsdtar -xOf $p.deb 'data.tar.*' | bsdtar -xf - -C termux
+          done
+          echo "USR=$PWD/termux/data/data/com.termux/files/usr" >> "$GITHUB_ENV"
+
+      - name: Build
+        run: |
+          bin=$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin
+          version=$(git describe --tags --always)-meowtty
+          make -C src -j"$(nproc)" proot \
+            CC=$bin/aarch64-linux-android24-clang \
+            STRIP=$bin/llvm-strip OBJCOPY=$bin/llvm-objcopy OBJDUMP=$bin/llvm-objdump \
+            PROOT_WITH_LIBANDROID_SHMEM=true \
+            PROOT_UNBUNDLE_LOADER=/nonexistent \
+            HAS_LOADER_32BIT= \
+            CPPFLAGS="-I$USR/include -DARG_MAX=131072 -DVERSION=\\\"$version\\\" -D_FILE_OFFSET_BITS=64 -D_GNU_SOURCE -I. -I./" \
+            LDFLAGS="-L$USR/lib"
+          $bin/llvm-strip src/proot
+          mkdir -p out
+          cp src/proot out/libproot.so
+          cp src/loader/loader out/libproot-loader.so
+          $bin/llvm-readelf -d out/libproot.so | grep NEEDED
+          (cd out && sha256sum * > SHA256SUMS)
+
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=meowtty-$(date -u +%Y%m%d)-$(git rev-parse --short=8 HEAD)
+          printf 'proot for MeowTTY, built by the workflow "MeowTTY build".\nSource: %s/%s/tree/%s\nLicense: GPL-2.0 (COPYING)\n' \
+            "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_SHA" > out/SOURCE.txt
+          gh release create "$tag" out/* --target "$GITHUB_SHA" --title "$tag" \
+            --notes "proot built with the Android NDK as the Termux package is, from commit $GITHUB_SHA. Source: this repository at that commit. GPL-2.0."
